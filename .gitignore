@@ -1,0 +1,12 @@
+bin/
+*.log
+*.err
+test-input.txt
+test-restore.txt
+test-pids.txt
+test-storage-node-*/
+storage-node-*/
+server-data/
+*.db
+*.db-shm
+*.db-wal

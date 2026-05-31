@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backup Server</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Backup Server</h1>
+        <p>Centralne zarzadzanie node'ami, backupami i odtwarzaniem danych</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshBtn" class="icon-button" title="Odswiez">↻</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="metrics" aria-label="Podsumowanie">
+        <div class="metric">
+          <span class="metric-label">Node'y online</span>
+          <strong id="metricNodes">0</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Wolne miejsce</span>
+          <strong id="metricFree">0 B</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Zajete miejsce</span>
+          <strong id="metricUsed">0 B</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Backupy</span>
+          <strong id="metricFiles">0</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Dedup saved</span>
+          <strong id="metricDedup">0 B</strong>
+        </div>
+      </section>
+
+      <section class="layout">
+        <div class="panel upload-panel">
+          <div class="panel-head">
+            <h2>Dodaj backup</h2>
+          </div>
+          <form id="uploadForm" class="upload-form">
+            <label class="dropzone" for="fileInput">
+              <input id="fileInput" name="file" type="file" required>
+              <span id="fileLabel">Wybierz plik</span>
+            </label>
+
+            <div class="form-grid">
+              <label>
+                <span>Nazwa backupu</span>
+                <input id="backupName" type="text" placeholder="np. dokumenty">
+              </label>
+              <label>
+                <span>Chunk size</span>
+                <select id="chunkSize">
+                  <option value="262144">256 KB</option>
+                  <option value="524288" selected>512 KB</option>
+                  <option value="1048576">1 MB</option>
+                  <option value="4194304">4 MB</option>
+                  <option value="16777216">16 MB</option>
+                  <option value="67108864">64 MB</option>
+                </select>
+              </label>
+              <label>
+                <span>Kopie</span>
+                <input id="replication" type="number" min="1" max="10" value="3">
+              </label>
+              <label>
+                <span>Retencja</span>
+                <input id="retention" type="number" min="0" max="999" value="5">
+              </label>
+            </div>
+
+            <button class="primary" type="submit">Wyslij do serwera</button>
+            <div class="progress" aria-hidden="true">
+              <div id="uploadProgress"></div>
+            </div>
+            <p id="uploadStatus" class="status"></p>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Podlaczeni klienci</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Adres</th>
+                  <th>Status</th>
+                  <th>Wolne</th>
+                  <th>Zajete</th>
+                  <th>Ostatnio</th>
+                  <th>Akcje</th>
+                </tr>
+              </thead>
+              <tbody id="nodesBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel files-panel">
+        <div class="panel-head">
+          <h2>Backupy</h2>
+          <span id="filesHint"></span>
+        </div>
+        <div class="files-grid">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Plik</th>
+                  <th>Backup</th>
+                  <th>Wersja</th>
+                  <th>Rozmiar</th>
+                  <th>Dedup</th>
+                  <th>Kopie</th>
+                  <th>Chunki</th>
+                  <th>ID</th>
+                  <th>Akcje</th>
+                </tr>
+              </thead>
+              <tbody id="filesBody"></tbody>
+            </table>
+          </div>
+          <aside class="manifest">
+            <h3 id="detailsTitle">Szczegoly</h3>
+            <div id="availabilitySummary" class="availability-summary"></div>
+            <div id="chunkMap" class="chunk-map"></div>
+            <pre id="manifestView">Wybierz backup z listy.</pre>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

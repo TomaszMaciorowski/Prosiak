@@ -1,0 +1,5 @@
+{
+  "addr": ":8080",
+  "db": "server-data/backup.db",
+  "replication_interval": "30s"
+}
