@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"backup/internal/auth"
 	"backup/internal/protocol"
 	"backup/internal/tlsconfig"
 	"backup/internal/version"
@@ -32,6 +33,7 @@ type clientConfig struct {
 	ChunkSize          int64       `json:"chunk_size"`
 	Replication        int         `json:"replication"`
 	Retention          int         `json:"retention"`
+	AuthToken          string      `json:"auth_token"`
 	CACertFile         string      `json:"ca_cert_file"`
 	InsecureSkipVerify bool        `json:"insecure_skip_verify"`
 	Jobs               []backupJob `json:"jobs"`
@@ -92,13 +94,18 @@ func usage() {
 	fmt.Println("  backupctl restore-job -server http://localhost:8080 -id file-id -out directory [-ca-cert-file ca.pem]")
 }
 
-func addTLSFlags(fs *flag.FlagSet) (*string, *bool) {
+func addTLSFlags(fs *flag.FlagSet) (*string, *bool, *string) {
 	caCertFile := fs.String("ca-cert-file", "", "CA certificate file trusted when connecting to the server")
 	insecureSkipVerify := fs.Bool("insecure-skip-verify", false, "skip TLS certificate verification when connecting to the server")
-	return caCertFile, insecureSkipVerify
+	authToken := fs.String("auth-token", "", "shared bearer token required by the server (or set "+auth.EnvVar+")")
+	return caCertFile, insecureSkipVerify, authToken
 }
 
-func configureHTTPClient(caCertFile string, insecureSkipVerify bool) error {
+func configureHTTPClient(caCertFile string, insecureSkipVerify bool, authToken string) error {
+	token := auth.Resolve(authToken)
+	if token == "" {
+		return fmt.Errorf("auth token is required: set -auth-token, auth_token in the config, or %s", auth.EnvVar)
+	}
 	client, err := tlsconfig.HTTPClient(tlsconfig.ClientConfig{
 		CACertFile:         caCertFile,
 		InsecureSkipVerify: insecureSkipVerify,
@@ -106,7 +113,7 @@ func configureHTTPClient(caCertFile string, insecureSkipVerify bool) error {
 	if err != nil {
 		return err
 	}
-	httpClient = client
+	httpClient = auth.Client(client, token)
 	return nil
 }
 
@@ -118,11 +125,11 @@ func backup(args []string) error {
 	retention := fs.Int("retention", 0, "keep last N versions for this backup name, 0 disables retention")
 	chunkSize := fs.Int64("chunk-size", defaultChunkSize, "chunk size in bytes")
 	replication := fs.Int("replication", 3, "copies per chunk")
-	caCertFile, insecureSkipVerify := addTLSFlags(fs)
+	caCertFile, insecureSkipVerify, authToken := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify, *authToken); err != nil {
 		return err
 	}
 	if *filePath == "" {
@@ -172,7 +179,7 @@ func backupConfiguredJob(args []string) error {
 	fs := flag.NewFlagSet("backup-job", flag.ExitOnError)
 	configPath := fs.String("config", "configs/client.json", "JSON client config file")
 	jobName := fs.String("job", "", "job name from config")
-	caCertFile, insecureSkipVerify := addTLSFlags(fs)
+	caCertFile, insecureSkipVerify, authToken := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -202,7 +209,10 @@ func backupConfiguredJob(args []string) error {
 	if *insecureSkipVerify {
 		cfg.InsecureSkipVerify = true
 	}
-	if err := configureHTTPClient(cfg.CACertFile, cfg.InsecureSkipVerify); err != nil {
+	if *authToken != "" {
+		cfg.AuthToken = *authToken
+	}
+	if err := configureHTTPClient(cfg.CACertFile, cfg.InsecureSkipVerify, cfg.AuthToken); err != nil {
 		return err
 	}
 
@@ -239,11 +249,11 @@ func restore(args []string) error {
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
 	fileID := fs.String("id", "", "file id")
 	outPath := fs.String("out", "", "restore output path")
-	caCertFile, insecureSkipVerify := addTLSFlags(fs)
+	caCertFile, insecureSkipVerify, authToken := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify, *authToken); err != nil {
 		return err
 	}
 	if *fileID == "" || *outPath == "" {
@@ -276,11 +286,11 @@ func restore(args []string) error {
 func listBackups(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
-	caCertFile, insecureSkipVerify := addTLSFlags(fs)
+	caCertFile, insecureSkipVerify, authToken := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify, *authToken); err != nil {
 		return err
 	}
 
@@ -322,11 +332,11 @@ func restoreConfiguredJob(args []string) error {
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
 	fileID := fs.String("id", "", "file id")
 	outPath := fs.String("out", "", "restore output directory")
-	caCertFile, insecureSkipVerify := addTLSFlags(fs)
+	caCertFile, insecureSkipVerify, authToken := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify, *authToken); err != nil {
 		return err
 	}
 	if *fileID == "" || *outPath == "" {

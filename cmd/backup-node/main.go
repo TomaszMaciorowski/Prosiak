@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"backup/internal/auth"
 	"backup/internal/chunkstore"
 	"backup/internal/httpjson"
 	"backup/internal/protocol"
@@ -28,6 +29,7 @@ type nodeConfig struct {
 	Storage            string `json:"storage"`
 	Capacity           string `json:"capacity"`
 	WipeStorage        bool   `json:"wipe_storage"`
+	AuthToken          string `json:"auth_token"`
 	CertFile           string `json:"cert_file"`
 	KeyFile            string `json:"key_file"`
 	CACertFile         string `json:"ca_cert_file"`
@@ -46,6 +48,7 @@ func main() {
 	storage := flag.String("storage", "storage-node-1", "chunk storage directory")
 	capacityText := flag.String("capacity", "10GB", "storage capacity reserved for backup, e.g. 10GB, 500MB, 1TB")
 	wipeStorage := flag.Bool("wipe-storage", false, "clear storage directory and exit")
+	authToken := flag.String("auth-token", "", "shared bearer token required to talk to the server and to this node (or set "+auth.EnvVar+")")
 	certFile := flag.String("cert-file", "", "TLS certificate file for HTTPS")
 	keyFile := flag.String("key-file", "", "TLS private key file for HTTPS")
 	caCertFile := flag.String("ca-cert-file", "", "CA certificate file trusted when connecting to the server")
@@ -80,6 +83,9 @@ func main() {
 		if cfg.WipeStorage && !overrides["wipe-storage"] {
 			*wipeStorage = cfg.WipeStorage
 		}
+		if cfg.AuthToken != "" && !overrides["auth-token"] {
+			*authToken = cfg.AuthToken
+		}
 		if cfg.CertFile != "" && !overrides["cert-file"] {
 			*certFile = cfg.CertFile
 		}
@@ -101,7 +107,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	serverHTTPClient = client
 
 	capacity, err := parseCapacity(*capacityText)
 	if err != nil {
@@ -121,6 +126,12 @@ func main() {
 		return
 	}
 
+	token := auth.Resolve(*authToken)
+	if token == "" {
+		log.Fatalf("auth token is required: set -auth-token, auth_token in the config, or %s", auth.EnvVar)
+	}
+	serverHTTPClient = auth.Client(client, token)
+
 	registerReq := nodeRegisterRequest(store, *id, *publicAddr, capacity)
 	if err := register(*serverURL, registerReq); err != nil {
 		log.Printf("register failed: %v", err)
@@ -136,8 +147,12 @@ func main() {
 	mux.HandleFunc("DELETE /chunks/", deleteChunk(store))
 	mux.HandleFunc("DELETE /storage", clearStorage(store))
 
+	handler := auth.Middleware(token, func(r *http.Request) bool {
+		return r.Method == http.MethodGet && r.URL.Path == "/health"
+	}, mux)
+
 	log.Printf("backup node %s listening on %s, storage=%s, capacity=%d", *id, *addr, *storage, capacity)
-	if err := tlsconfig.ListenAndServe(*addr, mux, tlsconfig.ServerConfig{
+	if err := tlsconfig.ListenAndServe(*addr, handler, tlsconfig.ServerConfig{
 		CertFile: *certFile,
 		KeyFile:  *keyFile,
 	}); err != nil {

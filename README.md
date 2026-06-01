@@ -307,6 +307,34 @@ go build -o backupctl-linux-amd64 ./cmd/backupctl
 
 Na maszynach produkcyjnych pamietaj o otwarciu portow miedzy serwerem i node'ami oraz o ustawieniu `public_addr` na adres widoczny z serwera.
 
+## Token Dostepu (Uwierzytelnianie)
+
+Calosc klastra chroni jeden wspolny token (bearer). Serwer i node nie wystartuja bez niego, a kazde zadanie do API (poza `GET /health` i statycznymi plikami panelu) musi miec naglowek `Authorization: Bearer <token>`.
+
+Token ustawisz na trzy sposoby, w kolejnosci priorytetu:
+
+1. flaga `-auth-token <token>`,
+2. pole `auth_token` w pliku konfiguracyjnym,
+3. zmienna srodowiskowa `BACKUP_AUTH_TOKEN`.
+
+Najwygodniej trzymac go w zmiennej srodowiskowej, zeby nie wpadl do repo. Wygeneruj losowy sekret, np.:
+
+```powershell
+$env:BACKUP_AUTH_TOKEN = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Ten sam token musza znac wszystkie komponenty: serwer, kazdy node oraz `backupctl`:
+
+```powershell
+go run ./cmd/backup-server -config configs\server.json
+go run ./cmd/backup-node -config configs\node.json
+go run ./cmd/backupctl list -server http://localhost:8080
+```
+
+Panel web przy pierwszym zadaniu zapyta o token i zapamieta go w `sessionStorage` przegladarki na czas sesji. Przy odpowiedzi `401` wyczysci go i zapyta ponownie.
+
+Token to wspolny sekret calego klastra - nie rozdziela rol miedzy serwer, node i klienta. Jego zadaniem jest odciecie nieuprawnionego dostepu do API (odczyt/kasowanie backupow, czyszczenie storage node'a) oraz zablokowanie rejestracji obcych node'ow, co domyka tez wektor SSRF.
+
 ## HTTPS / TLS
 
 Domyslnie Prosiak nadal startuje po zwyklym HTTP, zeby lokalny quick start dzialal bez certyfikatow. Szyfrowanie polaczen wlaczasz przez podanie certyfikatu i klucza dla procesu, ktory nasluchuje:
@@ -476,12 +504,14 @@ storage-node-3/
 
 Polaczenia moga byc szyfrowane przez HTTPS/TLS po ustawieniu `cert_file`, `key_file` i zaufanego `ca_cert_file`.
 
+Dostep do API serwera i node'ow chroni wspolny token (bearer) - patrz sekcja "Token Dostepu". Adres rejestrowanego node'a jest walidowany i sprowadzany do czystego `scheme://host`, co razem z tokenem domyka wektor SSRF.
+
 Na ten moment chunki na dysku node'a nie sa szyfrowane. To znaczy, ze osoba z dostepem do dysku node'a moze odczytac fragmenty danych. Nie wystawiaj tego systemu bezposrednio do internetu i traktuj go jako prototyp/MVP.
 
 ## Ograniczenia
 
 - brak szyfrowania chunkow na dysku,
-- brak autoryzacji,
+- uwierzytelnianie opiera sie na jednym wspolnym tokenie, bez podzialu na role,
 - brak pelnego trybu HA dla metadanych serwera,
 - SQLite `backup.db` jest pojedynczym punktem metadanych,
 - scheduler jest prosty i wymaga dalszego utwardzenia przed produkcja.

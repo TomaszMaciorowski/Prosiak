@@ -2,6 +2,7 @@
   "addr": ":8080",
   "db": "server-data/backup.db",
   "replication_interval": "30s",
+  "auth_token": "",
   "cert_file": "",
   "key_file": "",
   "ca_cert_file": "",

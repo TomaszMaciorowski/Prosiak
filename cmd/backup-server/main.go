@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"backup/internal/auth"
 	"backup/internal/server"
 	"backup/internal/tlsconfig"
 	"backup/internal/version"
@@ -17,6 +18,7 @@ type serverConfig struct {
 	Addr                string `json:"addr"`
 	DB                  string `json:"db"`
 	ReplicationInterval string `json:"replication_interval"`
+	AuthToken           string `json:"auth_token"`
 	CertFile            string `json:"cert_file"`
 	KeyFile             string `json:"key_file"`
 	CACertFile          string `json:"ca_cert_file"`
@@ -29,6 +31,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "server listen address")
 	dbPath := flag.String("db", "server-data/backup.db", "sqlite database path")
 	replicationInterval := flag.Duration("replication-interval", 30*time.Second, "replication scheduler interval")
+	authToken := flag.String("auth-token", "", "shared bearer token required on every API request (or set "+auth.EnvVar+")")
 	certFile := flag.String("cert-file", "", "TLS certificate file for HTTPS")
 	keyFile := flag.String("key-file", "", "TLS private key file for HTTPS")
 	caCertFile := flag.String("ca-cert-file", "", "CA certificate file trusted when connecting to nodes")
@@ -55,6 +58,9 @@ func main() {
 			}
 			*replicationInterval = parsed
 		}
+		if cfg.AuthToken != "" && !overrides["auth-token"] {
+			*authToken = cfg.AuthToken
+		}
 		if cfg.CertFile != "" && !overrides["cert-file"] {
 			*certFile = cfg.CertFile
 		}
@@ -69,6 +75,11 @@ func main() {
 		}
 	}
 
+	token := auth.Resolve(*authToken)
+	if token == "" {
+		log.Fatalf("auth token is required: set -auth-token, auth_token in the config, or %s", auth.EnvVar)
+	}
+
 	nodeClient, err := tlsconfig.HTTPClient(tlsconfig.ClientConfig{
 		CACertFile:         *caCertFile,
 		InsecureSkipVerify: *insecureSkipVerify,
@@ -76,7 +87,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server.SetNodeHTTPClient(nodeClient)
+	server.SetNodeHTTPClient(auth.Client(nodeClient, token))
 
 	state, err := server.NewState(*dbPath)
 	if err != nil {
@@ -86,7 +97,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server.StartReplicationScheduler(ctx, state, *replicationInterval)
-	handler := server.NewHandler(state)
+	handler := server.NewHandler(state, token)
 
 	log.Printf("backup server listening on %s, db=%s", *addr, *dbPath)
 	if err := tlsconfig.ListenAndServe(*addr, handler.Routes(), tlsconfig.ServerConfig{

@@ -29,6 +29,40 @@ const els = {
   metricDedup: document.querySelector("#metricDedup")
 };
 
+const TOKEN_KEY = "backupAuthToken";
+
+function getToken() {
+  let token = sessionStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    token = (window.prompt("Podaj token dostepu (BACKUP_AUTH_TOKEN):") || "").trim();
+    if (token) {
+      sessionStorage.setItem(TOKEN_KEY, token);
+    }
+  }
+  return token || "";
+}
+
+function clearToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+
+// authFetch dokleja token do kazdego zadania, a przy 401 czysci go i pyta o nowy raz.
+async function authFetch(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = new Headers(options.headers || {});
+  opts.headers.set("Authorization", `Bearer ${getToken()}`);
+  let response = await fetch(url, opts);
+  if (response.status === 401) {
+    clearToken();
+    const retryToken = getToken();
+    if (retryToken) {
+      opts.headers.set("Authorization", `Bearer ${retryToken}`);
+      response = await fetch(url, opts);
+    }
+  }
+  return response;
+}
+
 els.refreshBtn.addEventListener("click", refresh);
 els.uploadForm.addEventListener("submit", uploadBackup);
 els.fileInput.addEventListener("change", () => {
@@ -122,7 +156,7 @@ function renderFiles() {
         <div class="actions">
           <button class="secondary" type="button" data-manifest="${escapeHTML(file.id)}">Manifest</button>
           <button class="secondary" type="button" data-availability="${escapeHTML(file.id)}">Chunki</button>
-          <a class="secondary" href="/files/${encodeURIComponent(file.id)}/download" download="${escapeHTML(file.name)}">Restore</a>
+          <button class="secondary" type="button" data-download="${escapeHTML(file.id)}" data-download-name="${escapeHTML(file.name)}">Restore</button>
           <button class="secondary danger" type="button" data-delete="${escapeHTML(file.id)}">Usun</button>
         </div>
       </td>
@@ -137,6 +171,9 @@ function renderFiles() {
   });
   els.filesBody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteBackup(button.dataset.delete));
+  });
+  els.filesBody.querySelectorAll("[data-download]").forEach((button) => {
+    button.addEventListener("click", () => downloadFile(button.dataset.download, button.dataset.downloadName));
   });
   els.filesBody.querySelectorAll("[data-replication-save]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -205,7 +242,7 @@ async function updateReplication(id, replication) {
     return;
   }
   try {
-    const response = await fetch(`/files/${encodeURIComponent(id)}/replication`, {
+    const response = await authFetch(`/files/${encodeURIComponent(id)}/replication`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ replication })
@@ -293,7 +330,7 @@ async function uploadBackup(event) {
   els.uploadProgress.style.width = "20%";
 
   try {
-    const response = await fetch(`/backups?${params.toString()}`, {
+    const response = await authFetch(`/backups?${params.toString()}`, {
       method: "POST",
       body: form
     });
@@ -319,12 +356,40 @@ async function uploadBackup(event) {
   }
 }
 
+async function downloadFile(id, name) {
+  try {
+    setStatus(`Pobieranie ${name}...`, "");
+    const response = await authFetch(`/files/${encodeURIComponent(id)}/download`);
+    if (!response.ok) {
+      let message = response.statusText;
+      try {
+        message = (await response.json()).error || message;
+      } catch (_) {
+        // odpowiedz nie byla JSON-em, zostaje statusText
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const objectURL = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectURL;
+    link.download = name || id;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectURL);
+    setStatus(`Pobrano ${name}.`, "ok");
+  } catch (err) {
+    setStatus(`Pobieranie nieudane: ${err.message}`, "error");
+  }
+}
+
 async function deleteBackup(id) {
   if (!confirm(`Usunac backup ${id} i nieuzywane chunki z node'ow?`)) {
     return;
   }
   try {
-    const response = await fetch(`/files/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const response = await authFetch(`/files/${encodeURIComponent(id)}`, { method: "DELETE" });
     const body = await response.json();
     if (!response.ok) {
       throw new Error(body.error || response.statusText);
@@ -349,7 +414,7 @@ async function deleteNode(id, purgeStorage) {
   }
   try {
     const suffix = purgeStorage ? "?purge=true" : "";
-    const response = await fetch(`/nodes/${encodeURIComponent(id)}${suffix}`, { method: "DELETE" });
+    const response = await authFetch(`/nodes/${encodeURIComponent(id)}${suffix}`, { method: "DELETE" });
     const body = await response.json();
     if (!response.ok) {
       throw new Error(body.error || response.statusText);
@@ -366,7 +431,7 @@ async function deleteNode(id, purgeStorage) {
 }
 
 async function fetchJSON(url) {
-  const response = await fetch(url);
+  const response = await authFetch(url);
   const data = await response.json();
   if (!response.ok) {
     throw new Error(data.error || response.statusText);

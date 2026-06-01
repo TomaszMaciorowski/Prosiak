@@ -5,14 +5,17 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"backup/internal/auth"
 	"backup/internal/httpjson"
 	"backup/internal/protocol"
 )
@@ -29,10 +32,11 @@ func SetNodeHTTPClient(client *http.Client) {
 
 type Handler struct {
 	state *State
+	token string
 }
 
-func NewHandler(state *State) *Handler {
-	return &Handler{state: state}
+func NewHandler(state *State, token string) *Handler {
+	return &Handler{state: state, token: token}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -52,7 +56,21 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /files/", h.fileManifest)
 	mux.HandleFunc("PATCH /files/", h.patchFile)
 	mux.HandleFunc("DELETE /files/", h.deleteFile)
-	return mux
+	return auth.Middleware(h.token, publicPath, mux)
+}
+
+// publicPath marks the health check and the static dashboard assets as reachable
+// without a token. Every endpoint that exposes or mutates backup data stays
+// behind the bearer token.
+func publicPath(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/", "/index.html", "/app.js", "/app.css", "/favicon.ico", "/health":
+		return true
+	}
+	return false
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +87,12 @@ func (h *Handler) registerNode(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusBadRequest, "id and address are required")
 		return
 	}
+	address, err := normalizeNodeAddress(req.Address)
+	if err != nil {
+		httpjson.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Address = address
 	httpjson.Write(w, http.StatusOK, h.state.RegisterNode(req))
 }
 
@@ -406,6 +430,31 @@ func fileIDs(files []protocol.FileManifest) []string {
 		ids = append(ids, file.ID)
 	}
 	return ids
+}
+
+// normalizeNodeAddress validates a node-supplied address and reduces it to a
+// clean scheme://host base URL. The server later issues outbound requests to
+// this address, so rejecting anything but a bare http(s) host is what keeps a
+// rogue registration from turning the server into an SSRF proxy.
+func normalizeNodeAddress(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid address: %v", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("address must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("address must include a host")
+	}
+	if parsed.User != nil {
+		return "", errors.New("address must not include credentials")
+	}
+	if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("address must not include a path, query or fragment")
+	}
+	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
 func putChunk(nodeURL string, hash string, data []byte) error {
