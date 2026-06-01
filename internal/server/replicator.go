@@ -26,6 +26,7 @@ func StartReplicationScheduler(ctx context.Context, state *State, interval time.
 }
 
 func runReplicationOnce(state *State) {
+	// Najpierw sprzatamy stare smieci, potem zajmujemy sie stanem zdrowych backupow.
 	cleanupOrphanChunks(state)
 	pruneExtraCopies(state)
 	replicateMissingCopies(state)
@@ -34,6 +35,7 @@ func runReplicationOnce(state *State) {
 func cleanupOrphanChunks(state *State) {
 	tasks := state.OrphanChunkTasks(100)
 	for _, task := range tasks {
+		// To sa chunki po backupach skasowanych wtedy, gdy node byl offline.
 		if err := deleteChunk(task.Node.Address, task.Hash); err != nil {
 			log.Printf("orphan cleanup failed: hash=%s node=%s: %v", task.Hash, task.Node.ID, err)
 			continue

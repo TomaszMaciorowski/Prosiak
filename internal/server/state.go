@@ -250,6 +250,7 @@ ORDER BY free DESC, id
 			nodes = append(nodes, node)
 		}
 	}
+	// Przy uploadzie patrzymy nie tylko na wolne miejsce, ale tez na to, zeby jeden node nie dostal calej serii chunkow.
 	sort.Slice(nodes, func(i, j int) bool {
 		leftCount := 0
 		rightCount := 0
@@ -546,6 +547,7 @@ LIMIT -1 OFFSET ?
 		return nil, nil
 	}
 
+	// Najpierw zapamietujemy manifesty do odpowiedzi/API, dopiero potem kasujemy je z bazy.
 	deleted := make([]protocol.FileManifest, 0, len(ids))
 	for _, id := range ids {
 		file, ok := s.File(id)
@@ -709,6 +711,7 @@ func (s *State) OrphanChunkTasks(limit int) []OrphanChunkTask {
 		limit = 100
 	}
 	cutoff := time.Now().UTC().Add(-nodeOfflineAfter).Format(time.RFC3339)
+	// Osierocony chunk to taki, ktory nadal ma lokalizacje na nodzie, ale nie nalezy juz do zadnego backupu.
 	rows, err := s.db.Query(`
 SELECT
 	cl.hash,
