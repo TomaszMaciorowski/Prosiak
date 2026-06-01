@@ -35,6 +35,7 @@ type FileManifest struct {
 	DedupNewBytes    int64      `json:"dedup_new_bytes"`
 	DedupReusedBytes int64      `json:"dedup_reused_bytes"`
 	DedupRatio       float64    `json:"dedup_ratio"`
+	ChunkCount       int        `json:"chunk_count"`
 	Chunks           []ChunkRef `json:"chunks"`
 	RetentionDeleted []string   `json:"retention_deleted,omitempty"`
 }

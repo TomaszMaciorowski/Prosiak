@@ -15,7 +15,7 @@ func TestApplyRetentionKeepsNewestVersionsAndOnlyReturnsUnusedChunks(t *testing.
 	defer state.Close()
 
 	create := func(name string, chunks []protocol.ChunkRef) protocol.FileManifest {
-		return state.CreateFile(protocol.CreateFileRequest{
+		file, err := state.CreateFile(protocol.CreateFileRequest{
 			Name:        "data.bin",
 			BackupName:  name,
 			Retention:   2,
@@ -24,6 +24,10 @@ func TestApplyRetentionKeepsNewestVersionsAndOnlyReturnsUnusedChunks(t *testing.
 			Replication: 3,
 			Chunks:      chunks,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return file
 	}
 
 	v1 := create("daily", []protocol.ChunkRef{

@@ -12,6 +12,7 @@ import (
 
 	"backup/internal/protocol"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -334,8 +335,10 @@ func (s *State) ChunkInUse(hash string) bool {
 	return count > 0
 }
 
-func (s *State) CreateFile(req protocol.CreateFileRequest) protocol.FileManifest {
-	id := fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102"), time.Now().UTC().UnixNano())
+func (s *State) CreateFile(req protocol.CreateFileRequest) (protocol.FileManifest, error) {
+	// UUID gwarantuje unikalny id niezaleznie od rozdzielczosci zegara; data z
+	// przodu jest tylko po to, zeby id bylo czytelne dla czlowieka.
+	id := time.Now().UTC().Format("20060102") + "-" + uuid.NewString()
 	backupName := strings.TrimSpace(req.BackupName)
 	if backupName == "" {
 		backupName = req.Name
@@ -358,31 +361,34 @@ func (s *State) CreateFile(req protocol.CreateFileRequest) protocol.FileManifest
 		DedupReusedBytes: dedupReusedBytes,
 		Chunks:           req.Chunks,
 	}
+	file.ChunkCount = len(file.Chunks)
 	file.DedupRatio = dedupRatio(file.DedupReusedBytes, file.Size)
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return file
+		return file, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	file.CreatedAt = createdAt
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(version), 0) + 1 FROM files WHERE backup_name = ?`, backupName).Scan(&file.Version); err != nil {
-		return file
+		return file, fmt.Errorf("assign version: %w", err)
 	}
 	if _, err := tx.Exec(`INSERT INTO files (id, name, backup_name, version, retention, size, chunk_size, replication, dedup_new_bytes, dedup_reused_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		file.ID, file.Name, file.BackupName, file.Version, file.Retention, file.Size, file.ChunkSize, file.Replication, file.DedupNewBytes, file.DedupReusedBytes, file.CreatedAt); err != nil {
-		return file
+		return file, fmt.Errorf("insert file: %w", err)
 	}
 	for _, chunk := range file.Chunks {
 		if _, err := tx.Exec(`INSERT INTO file_chunks (file_id, chunk_index, hash, size) VALUES (?, ?, ?, ?)`,
 			file.ID, chunk.Index, chunk.Hash, chunk.Size); err != nil {
-			return file
+			return file, fmt.Errorf("insert chunk %d: %w", chunk.Index, err)
 		}
 	}
-	_ = tx.Commit()
-	return file
+	if err := tx.Commit(); err != nil {
+		return file, fmt.Errorf("commit: %w", err)
+	}
+	return file, nil
 }
 
 func (s *State) File(id string) (protocol.FileManifest, bool) {
@@ -394,6 +400,7 @@ func (s *State) File(id string) (protocol.FileManifest, bool) {
 	}
 	file.DedupRatio = dedupRatio(file.DedupReusedBytes, file.Size)
 	file.Chunks = s.fileChunks(id)
+	file.ChunkCount = len(file.Chunks)
 	return file, true
 }
 
@@ -475,10 +482,32 @@ func (s *State) Files() []protocol.FileManifest {
 	}
 	_ = rows.Close()
 
+	// Lista nie zwraca pelnych chunkow (dashboard odpytuje ja co kilka sekund),
+	// tylko ich liczbe policzona jednym zapytaniem zamiast N+1.
+	counts := s.chunkCounts()
 	for i := range files {
-		files[i].Chunks = s.fileChunks(files[i].ID)
+		files[i].ChunkCount = counts[files[i].ID]
 	}
 	return files
+}
+
+// chunkCounts returns the number of chunks per file id in a single query.
+func (s *State) chunkCounts() map[string]int {
+	rows, err := s.db.Query(`SELECT file_id, COUNT(*) FROM file_chunks GROUP BY file_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var id string
+		var count int
+		if err := rows.Scan(&id, &count); err == nil {
+			counts[id] = count
+		}
+	}
+	return counts
 }
 
 func (s *State) DeleteFile(id string) (protocol.FileManifest, []string, bool) {

@@ -112,6 +112,78 @@ func readChunk(t *testing.T, store *Store, hash string) []byte {
 	return data
 }
 
+func TestUsedTracksPutDeleteClearAndReopen(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used := mustUsed(t, store); used != 0 {
+		t.Fatalf("fresh store used = %d, want 0", used)
+	}
+
+	a := []byte("chunk-a-payload")
+	b := []byte("chunk-b-bigger-payload-here")
+	put(t, store, a)
+	put(t, store, b)
+	want := int64(len(a) + len(b))
+	if used := mustUsed(t, store); used != want {
+		t.Fatalf("after two puts used = %d, want %d", used, want)
+	}
+
+	// Re-putting the same content must not double count.
+	put(t, store, a)
+	if used := mustUsed(t, store); used != want {
+		t.Fatalf("after idempotent put used = %d, want %d", used, want)
+	}
+
+	// Reopening the store over the same directory must reseed the same total.
+	reopened, err := New(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used := mustUsed(t, reopened); used != want {
+		t.Fatalf("reopened store used = %d, want %d", used, want)
+	}
+
+	if err := store.Delete(HashBytes(a)); err != nil {
+		t.Fatal(err)
+	}
+	if used := mustUsed(t, store); used != int64(len(b)) {
+		t.Fatalf("after delete used = %d, want %d", used, len(b))
+	}
+	// Deleting a missing chunk must not move the counter.
+	if err := store.Delete(HashBytes(a)); err != nil {
+		t.Fatal(err)
+	}
+	if used := mustUsed(t, store); used != int64(len(b)) {
+		t.Fatalf("after redundant delete used = %d, want %d", used, len(b))
+	}
+
+	if _, _, err := store.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if used := mustUsed(t, store); used != 0 {
+		t.Fatalf("after clear used = %d, want 0", used)
+	}
+}
+
+func put(t *testing.T, store *Store, data []byte) {
+	t.Helper()
+	if _, err := store.Put(HashBytes(data), bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustUsed(t *testing.T, store *Store) int64 {
+	t.Helper()
+	used, err := store.Used()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return used
+}
+
 func TestPathRejectsTraversal(t *testing.T) {
 	store, err := New(t.TempDir(), nil)
 	if err != nil {

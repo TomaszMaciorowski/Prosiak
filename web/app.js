@@ -150,7 +150,7 @@ function renderFiles() {
           <button class="secondary" type="button" data-replication-save="${escapeHTML(file.id)}">Zapisz</button>
         </div>
       </td>
-      <td>${file.chunks.length}</td>
+      <td>${file.chunk_count ?? 0}</td>
       <td>${escapeHTML(file.id)}</td>
       <td>
         <div class="actions">

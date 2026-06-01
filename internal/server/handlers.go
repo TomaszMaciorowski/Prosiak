@@ -199,7 +199,11 @@ func (h *Handler) createFile(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusBadRequest, "name, size and positive chunk_size are required")
 		return
 	}
-	manifest := h.state.CreateFile(req)
+	manifest, err := h.state.CreateFile(req)
+	if err != nil {
+		httpjson.Error(w, http.StatusInternalServerError, fmt.Sprintf("save file failed: %v", err))
+		return
+	}
 	deletedVersions, unusedHashes := h.state.ApplyRetention(manifest.BackupName, manifest.Retention)
 	manifest.RetentionDeleted = fileIDs(deletedVersions)
 	h.deleteUnusedChunks(unusedHashes)
@@ -363,7 +367,7 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 		totalSize += int64(n)
 	}
 
-	manifest := h.state.CreateFile(protocol.CreateFileRequest{
+	manifest, err := h.state.CreateFile(protocol.CreateFileRequest{
 		Name:             filename,
 		BackupName:       backupName,
 		Retention:        retention,
@@ -374,6 +378,12 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 		DedupReusedBytes: dedupReusedBytes,
 		Chunks:           chunks,
 	})
+	if err != nil {
+		// Chunki sa juz na node'ach, ale bez wpisu w bazie sa osierocone -
+		// scheduler je posprzata. Zglaszamy blad, zeby klient wiedzial.
+		httpjson.Error(w, http.StatusInternalServerError, fmt.Sprintf("save manifest failed: %v", err))
+		return
+	}
 	deletedVersions, unusedHashes := h.state.ApplyRetention(manifest.BackupName, manifest.Retention)
 	manifest.RetentionDeleted = fileIDs(deletedVersions)
 	h.deleteUnusedChunks(unusedHashes)

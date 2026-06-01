@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 var ErrHashMismatch = errors.New("chunk hash mismatch")
@@ -21,6 +22,11 @@ var ErrHashMismatch = errors.New("chunk hash mismatch")
 type Store struct {
 	root string
 	aead cipher.AEAD // optional at-rest encryption; nil means chunks are stored as plaintext
+
+	// used is the on-disk byte total, kept in memory so the hot path (capacity
+	// checks on every PUT, heartbeats) never has to walk the whole storage tree.
+	mu   sync.Mutex
+	used int64
 }
 
 // New opens a chunk store rooted at root. If key is non-empty it must be 32
@@ -45,12 +51,62 @@ func New(root string, key []byte) (*Store, error) {
 		}
 		store.aead = gcm
 	}
+	// Seed the in-memory usage counter once; from here on it is maintained
+	// incrementally by Put/Delete/Clear.
+	used, err := store.scanUsed()
+	if err != nil {
+		return nil, err
+	}
+	store.used = used
 	return store, nil
 }
 
 // Encrypted reports whether chunks are stored encrypted at rest.
 func (s *Store) Encrypted() bool {
 	return s.aead != nil
+}
+
+// scanUsed walks the storage tree and sums the size of every chunk file. It is
+// only called once, at startup, to seed the cached counter.
+func (s *Store) scanUsed() (int64, error) {
+	var total int64
+	err := filepath.WalkDir(s.root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".chunk") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+// addUsed adjusts the cached usage counter, clamping at zero.
+func (s *Store) addUsed(delta int64) {
+	s.mu.Lock()
+	s.used += delta
+	if s.used < 0 {
+		s.used = 0
+	}
+	s.mu.Unlock()
+}
+
+// fileSize returns the size of path, or 0 if it does not exist.
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func (s *Store) Path(hash string) (string, error) {
@@ -115,10 +171,12 @@ func (s *Store) putPlain(hash string, r io.Reader) (int64, error) {
 		return n, fmt.Errorf("%w: expected %s got %s", ErrHashMismatch, hash, got)
 	}
 
+	oldSize := fileSize(path)
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return n, err
 	}
+	s.addUsed(fileSize(path) - oldSize)
 	return n, nil
 }
 
@@ -153,10 +211,12 @@ func (s *Store) putEncrypted(hash string, r io.Reader) (int64, error) {
 	if err := os.WriteFile(tmp, sealed, 0644); err != nil {
 		return n, err
 	}
+	oldSize := fileSize(path)
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return n, err
 	}
+	s.addUsed(fileSize(path) - oldSize)
 	return n, nil
 }
 
@@ -194,9 +254,14 @@ func (s *Store) Delete(hash string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	size := fileSize(path)
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
+	s.addUsed(-size)
 	return nil
 }
 
@@ -235,26 +300,18 @@ func (s *Store) Clear() (int64, int64, error) {
 	if err := os.MkdirAll(s.root, 0755); err != nil {
 		return files, bytes, err
 	}
+	s.mu.Lock()
+	s.used = 0
+	s.mu.Unlock()
 	return files, bytes, nil
 }
 
+// Used returns the cached on-disk byte total. It no longer walks the storage
+// tree, so it stays O(1) no matter how many chunks the node holds.
 func (s *Store) Used() (int64, error) {
-	var total int64
-	err := filepath.WalkDir(s.root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".chunk") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		total += info.Size()
-		return nil
-	})
-	return total, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used, nil
 }
 
 func HashBytes(data []byte) string {
