@@ -1,4 +1,6 @@
 bin/
+configs/*.local.json
+configs/ksef.json
 *.log
 *.err
 test-input.txt

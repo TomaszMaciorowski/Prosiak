@@ -158,6 +158,7 @@ func backupConfiguredJob(args []string) error {
 		serverURL = "http://localhost:8080"
 	}
 
+	// Tar leci strumieniem, zeby nie robic lokalnego pliku tymczasowego dla duzych katalogow.
 	pr, pw := io.Pipe()
 	go func() {
 		pw.CloseWithError(writeTarJob(pw, job))
@@ -389,6 +390,7 @@ func selectJob(cfg clientConfig, name string) (backupJob, bool, error) {
 		return cfg.Jobs[0], true, nil
 	}
 
+	// Przy wielu jobach nie zgadujemy. Lepiej zmusic usera do wyboru niz zbackupowac zly katalog.
 	names := make([]string, 0, len(cfg.Jobs))
 	for _, job := range cfg.Jobs {
 		names = append(names, job.Name)
@@ -482,6 +484,7 @@ func tarRoots(paths []string) ([]tarRoot, error) {
 		if used[base] > 1 {
 			prefix = fmt.Sprintf("%s-%d", base, used[base])
 		}
+		// W archiwum trzymamy nazwe katalogu startowego, a nie cala lokalna sciezke z dysku.
 		parent := filepath.Dir(abs)
 		if !info.IsDir() {
 			parent = filepath.Dir(abs)
@@ -673,6 +676,7 @@ func extractTar(r io.Reader, outDir string) error {
 }
 
 func safeExtractPath(outAbs string, name string) (string, error) {
+	// Tar potrafi zawierac sciezki typu ../plik. Tego nie wolno wypuscic poza katalog restore.
 	cleaned := filepath.Clean(filepath.FromSlash(name))
 	if cleaned == "." || filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || cleaned == ".." {
 		return "", fmt.Errorf("unsafe tar path %q", name)

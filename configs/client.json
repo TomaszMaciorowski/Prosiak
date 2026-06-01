@@ -7,7 +7,7 @@
     {
       "name": "documents",
       "paths": [
-        "C:/Users/Tomek/Documents"
+        "C:/path/to/documents"
       ],
       "exclude": [
         "**/.git/**",

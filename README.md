@@ -1,4 +1,4 @@
-# Distributed Backup MVP
+# Prosiak
 
 ## Retention / Wersje Backupu
 
@@ -58,8 +58,8 @@ Przyklad konfiguracji:
     {
       "name": "documents",
       "paths": [
-        "C:/Users/Tomek/Documents",
-        "D:/projekty"
+        "C:/path/to/documents",
+        "D:/path/to/projects"
       ],
       "exclude": [
         "**/.git/**",
@@ -144,7 +144,7 @@ go run ./cmd/backup-node -config configs\node.json -id node-3 -addr :9003 -publi
 Przy jednym jobie w configu nie musisz podawac `-job`:
 
 ```powershell
-go run ./cmd/backupctl backup-job -config configs\ksef.json
+go run ./cmd/backupctl backup-job -config configs\client.json
 ```
 
 Jezeli config ma wiele jobow:
@@ -165,13 +165,13 @@ Do restore wybierasz konkretne `FILE_ID`, czyli konkretna wersje backupu.
 ### 5. Odtworz backup katalogu
 
 ```powershell
-go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\ksef
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\documents
 ```
 
 Przyklad:
 
 ```powershell
-go run ./cmd/backupctl restore-job -server http://localhost:8080 -id 20260601-1790000000000000000 -out C:\restore\ksef
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id 20260601-1790000000000000000 -out C:\restore\documents
 ```
 
 ### 6. Backup pojedynczego pliku
@@ -191,16 +191,18 @@ go run ./cmd/backupctl restore -server http://localhost:8080 -id <file_id> -out 
 ```powershell
 go run ./cmd/backup-server -config configs\server.json
 go run ./cmd/backup-node -config configs\node.json
-go run ./cmd/backupctl backup-job -config configs\ksef.json
+go run ./cmd/backupctl backup-job -config configs\client.json
 go run ./cmd/backupctl list -server http://localhost:8080
-go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\ksef
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\documents
 ```
 
-> A small Go prototype of a centrally managed, chunk-based distributed backup system.
+> Prosiak is a small Go prototype of a centrally managed, chunk-based distributed backup system.
 
 This project stores backup data across many storage nodes. The server accepts files, splits them into content-addressed chunks, distributes those chunks across nodes, keeps metadata in SQLite, and restores files by reading the required chunks back from available nodes.
 
 The storage nodes are intentionally simple: they do not know file names, manifests, users, or backup logic. They only store, return, and delete chunks.
+
+The main idea is to turn many ordinary machines into one distributed backup pool. If the system runs on dozens or hundreds of user computers, the server can spread chunks across available nodes, keep the requested number of copies, move missing copies to other online nodes, and clean up data that is no longer needed.
 
 ## English
 
@@ -283,7 +285,7 @@ Optional CLI client. It talks only to the server, not directly to nodes.
 Run from the project directory:
 
 ```powershell
-cd C:\dev\go\Backup
+cd C:\path\to\Prosiak
 ```
 
 Start the server:
@@ -444,7 +446,7 @@ go run ./cmd/backup-node -storage storage-node-1 -wipe-storage
 
 ---
 
-# Rozproszony Backup MVP
+# Prosiak
 
 > Mały prototyp w Go: centralnie zarządzany, chunkowy system rozproszonego backupu.
 
@@ -531,7 +533,7 @@ Opcjonalne narzędzie CLI. Łączy się tylko z serwerem, nie bezpośrednio z no
 Uruchamiaj z katalogu projektu:
 
 ```powershell
-cd C:\dev\go\Backup
+cd C:\path\to\Prosiak
 ```
 
 Start serwera:

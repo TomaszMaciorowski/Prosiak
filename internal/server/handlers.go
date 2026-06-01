@@ -254,6 +254,7 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("backup upload file=%s backup_name=%s chunk_size=%d replication=%d retention=%d", header.Filename, backupName, chunkSize, replication, retention)
 
+	// Granice chunkow wynikaja z tresci, wiec mala wstawka w archiwum nie przesuwa calej reszty backupu.
 	reader := bufio.NewReader(file)
 	chunks := make([]protocol.ChunkRef, 0)
 	selectedCounts := make(map[string]int)
@@ -282,6 +283,7 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 		existingCopies := onlineCount(h.state.ChunkLocations(hash))
 		missingCopies := replication - existingCopies
 		if missingCopies > 0 {
+			// selectedCounts rozklada nowe chunki rowniej po node'ach w ramach jednego uploadu.
 			nodes := h.state.PlanChunkSpread(hash, int64(n), missingCopies, selectedCounts)
 			if len(nodes) < missingCopies {
 				httpjson.Error(w, http.StatusServiceUnavailable, fmt.Sprintf("not enough nodes for chunk %s: need %d got %d", hash, missingCopies, len(nodes)))
@@ -429,6 +431,7 @@ func deleteChunk(nodeURL string, hash string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
+		// Skoro node juz tego nie ma, to z punktu widzenia sprzatania jestesmy w domu.
 		return nil
 	}
 	if resp.StatusCode >= 300 {
@@ -542,6 +545,7 @@ func readContentDefinedChunk(r *bufio.Reader, targetSize int64) ([]byte, error) 
 		mask = uint64(defaultChunkSize - 1)
 	}
 
+	// Prosty rolling hash: czekamy na "naturalne" miejsce ciecia, ale pilnujemy min/max rozmiaru.
 	data := make([]byte, 0, int(targetSize))
 	var hash uint64
 	for len(data) < maxSize {
