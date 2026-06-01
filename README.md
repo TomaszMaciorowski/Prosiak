@@ -1,5 +1,4 @@
 # Prosiak
-
 ## Retention / Wersje Backupu
 
 Ten sam backup mozna wrzucac wiele razy pod jedna logiczna nazwa.
