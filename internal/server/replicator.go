@@ -26,8 +26,21 @@ func StartReplicationScheduler(ctx context.Context, state *State, interval time.
 }
 
 func runReplicationOnce(state *State) {
+	cleanupOrphanChunks(state)
 	pruneExtraCopies(state)
 	replicateMissingCopies(state)
+}
+
+func cleanupOrphanChunks(state *State) {
+	tasks := state.OrphanChunkTasks(100)
+	for _, task := range tasks {
+		if err := deleteChunk(task.Node.Address, task.Hash); err != nil {
+			log.Printf("orphan cleanup failed: hash=%s node=%s: %v", task.Hash, task.Node.ID, err)
+			continue
+		}
+		state.RemoveChunkLocation(task.Hash, task.Node.ID)
+		log.Printf("orphan cleanup deleted: hash=%s node=%s size=%d", task.Hash, task.Node.ID, task.Size)
+	}
 }
 
 func replicateMissingCopies(state *State) {

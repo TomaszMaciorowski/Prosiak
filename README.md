@@ -20,10 +20,181 @@ backupctl backup -server http://localhost:8080 -file .\dane.zip -name dokumenty 
 Restore dalej robisz po konkretnym `file_id`, czyli mozesz odtworzyc wybrana wersje.
 Chunki sa deduplikowane po hashach: jezeli dwie wersje uzywaja tego samego chunka, usuniecie starej wersji nie kasuje wspolnych danych z node'ow.
 
-Domyslny rozmiar chunka to teraz `512 KB` (`524288` bajtow), co jest sensowniejsze dla deduplikacji wersji niz poprzednie duze chunki.
-Panel pozwala wybrac: `256 KB`, `512 KB`, `1 MB`, `4 MB`, `16 MB`, `64 MB`.
+Domyslny rozmiar chunka to teraz `512 KB` (`524288` bajtow).
+Serwer uzywa content-defined chunking, wiec `chunk_size` jest docelowym srednim rozmiarem chunka, a nie sztywna granica co dokladnie N bajtow.
+Dzieki temu mala zmiana w katalogu albo dodanie malego pliku nie powinno przesuwac wszystkich kolejnych chunkow i psuc deduplikacji calego archiwum.
+Panel pozwala wybrac: `32 KB`, `64 KB`, `128 KB`, `256 KB`, `512 KB`, `1 MB`, `4 MB`, `16 MB`, `64 MB`.
 Panel i `backupctl` pokazuja tez procent deduplikacji dla kazdej wersji: ile danych zostalo uzyte ponownie z juz istniejacych chunkow zamiast zapisania jako nowe.
 Gorny pasek panelu pokazuje lacznie zaoszczedzone bajty i procent dla wszystkich zapisanych wersji.
+
+Mapa rozmiarow chunkow:
+
+```text
+32 KB  = 32768
+64 KB  = 65536
+128 KB = 131072
+256 KB = 262144
+512 KB = 524288
+1 MB   = 1048576
+4 MB   = 4194304
+16 MB  = 16777216
+64 MB  = 67108864
+```
+
+## Backup Katalogow Z Configu
+
+`backupctl` potrafi zrobic backup calego katalogu albo kilku katalogow z jednego joba w pliku JSON.
+Klient rekurencyjnie skanuje sciezki, pomija wpisy z `exclude`, pakuje wynik do strumienia `tar` bez kompresji i wysyla go do obecnego API serwera jako jeden backup.
+
+Przyklad konfiguracji:
+
+```json
+{
+  "server": "http://localhost:8080",
+  "chunk_size": 524288,
+  "replication": 3,
+  "retention": 5,
+  "jobs": [
+    {
+      "name": "documents",
+      "paths": [
+        "C:/Users/Tomek/Documents",
+        "D:/projekty"
+      ],
+      "exclude": [
+        "**/.git/**",
+        "**/node_modules/**",
+        "**/bin/**",
+        "**/obj/**",
+        "**/*.tmp",
+        "**/*.log"
+      ]
+    }
+  ]
+}
+```
+
+Uruchomienie backupu joba:
+
+```powershell
+go run ./cmd/backupctl backup-job -config configs\client.json
+```
+
+Jezeli config ma wiele jobow, wybierz konkretny:
+
+```powershell
+go run ./cmd/backupctl backup-job -config configs\client.json -job documents
+```
+
+Lista backupow i ich `file_id`:
+
+```powershell
+go run ./cmd/backupctl list -server http://localhost:8080
+```
+
+Odtworzenie takiego backupu do katalogu:
+
+```powershell
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\documents
+```
+
+Wzorce `exclude` sa dopasowywane do sciezek w archiwum z separatorami `/`.
+Przyklady:
+
+- `**/.git/**` pomija katalogi `.git`;
+- `**/node_modules/**` pomija `node_modules`;
+- `**/*.log` pomija pliki logow.
+
+Archiwum nie jest kompresowane celowo: dzieki temu deduplikacja chunkow ma wieksza szanse ponownie uzyc bajtow z poprzednich wersji backupu.
+
+## HOWTO: Uzycie Z Linii Komend
+
+### 1. Uruchom serwer
+
+```powershell
+go run ./cmd/backup-server -config configs\server.json
+```
+
+Domyslnie panel web jest pod:
+
+```text
+http://localhost:8080/
+```
+
+### 2. Uruchom node storage
+
+Jeden node z pliku config:
+
+```powershell
+go run ./cmd/backup-node -config configs\node.json
+```
+
+Kilka node'ow mozesz uruchomic z tym samym configiem i nadpisac parametry:
+
+```powershell
+go run ./cmd/backup-node -config configs\node.json -id node-2 -addr :9002 -public-addr http://localhost:9002 -storage storage-node-2
+```
+
+```powershell
+go run ./cmd/backup-node -config configs\node.json -id node-3 -addr :9003 -public-addr http://localhost:9003 -storage storage-node-3
+```
+
+### 3. Zrob backup katalogu z configu
+
+Przy jednym jobie w configu nie musisz podawac `-job`:
+
+```powershell
+go run ./cmd/backupctl backup-job -config configs\ksef.json
+```
+
+Jezeli config ma wiele jobow:
+
+```powershell
+go run ./cmd/backupctl backup-job -config configs\client.json -job documents
+```
+
+### 4. Zobacz liste backupow i wersji
+
+```powershell
+go run ./cmd/backupctl list -server http://localhost:8080
+```
+
+Wynik zawiera m.in. `BACKUP`, `VERSION` i `FILE_ID`.
+Do restore wybierasz konkretne `FILE_ID`, czyli konkretna wersje backupu.
+
+### 5. Odtworz backup katalogu
+
+```powershell
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\ksef
+```
+
+Przyklad:
+
+```powershell
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id 20260601-1790000000000000000 -out C:\restore\ksef
+```
+
+### 6. Backup pojedynczego pliku
+
+```powershell
+go run ./cmd/backupctl backup -server http://localhost:8080 -file .\dane.zip -name dokumenty -retention 5 -chunk-size 262144 -replication 2
+```
+
+### 7. Restore pojedynczego pliku
+
+```powershell
+go run ./cmd/backupctl restore -server http://localhost:8080 -id <file_id> -out .\restore.zip
+```
+
+### 8. Najczestszy cykl pracy
+
+```powershell
+go run ./cmd/backup-server -config configs\server.json
+go run ./cmd/backup-node -config configs\node.json
+go run ./cmd/backupctl backup-job -config configs\ksef.json
+go run ./cmd/backupctl list -server http://localhost:8080
+go run ./cmd/backupctl restore-job -server http://localhost:8080 -id <file_id> -out C:\restore\ksef
+```
 
 > A small Go prototype of a centrally managed, chunk-based distributed backup system.
 
@@ -224,6 +395,7 @@ The replication scheduler runs in the background:
 
 - if active copies are below the requested count, it creates new copies on other active nodes;
 - if old nodes return and there are too many active copies, it removes extra copies;
+- if a backup was deleted while a node was offline, it deletes orphan chunks from that node after it comes back;
 - if no active copy of a chunk exists, the server must wait until at least one node with that chunk comes back.
 
 ### Server API

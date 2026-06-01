@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -253,7 +254,7 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("backup upload file=%s backup_name=%s chunk_size=%d replication=%d retention=%d", header.Filename, backupName, chunkSize, replication, retention)
 
-	buf := make([]byte, chunkSize)
+	reader := bufio.NewReader(file)
 	chunks := make([]protocol.ChunkRef, 0)
 	selectedCounts := make(map[string]int)
 	seenHashes := make(map[string]bool)
@@ -261,16 +262,16 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 	var dedupNewBytes int64
 	var dedupReusedBytes int64
 	for index := 0; ; index++ {
-		n, readErr := io.ReadFull(file, buf)
+		data, readErr := readContentDefinedChunk(reader, chunkSize)
 		if readErr == io.EOF {
 			break
 		}
-		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		if readErr != nil {
 			httpjson.Error(w, http.StatusInternalServerError, readErr.Error())
 			return
 		}
+		n := len(data)
 
-		data := append([]byte(nil), buf[:n]...)
 		hash := hashData(data)
 		if seenHashes[hash] || h.state.ChunkInUse(hash) {
 			dedupReusedBytes += int64(n)
@@ -307,9 +308,6 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 			Size:  int64(n),
 		})
 		totalSize += int64(n)
-		if readErr == io.ErrUnexpectedEOF {
-			break
-		}
 	}
 
 	manifest := h.state.CreateFile(protocol.CreateFileRequest{
@@ -430,6 +428,9 @@ func deleteChunk(nodeURL string, hash string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("%s: %s", resp.Status, string(body))
@@ -521,4 +522,70 @@ func onlineCount(nodes []protocol.NodeInfo) int {
 func hashData(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func readContentDefinedChunk(r *bufio.Reader, targetSize int64) ([]byte, error) {
+	if targetSize <= 0 {
+		targetSize = defaultChunkSize
+	}
+	minSize := int(targetSize / 4)
+	if minSize < 8*1024 {
+		minSize = 8 * 1024
+	}
+	maxSize := int(targetSize * 4)
+	if maxSize < minSize {
+		maxSize = minSize
+	}
+
+	mask := uint64(nextPowerOfTwo(targetSize) - 1)
+	if mask == 0 {
+		mask = uint64(defaultChunkSize - 1)
+	}
+
+	data := make([]byte, 0, int(targetSize))
+	var hash uint64
+	for len(data) < maxSize {
+		b, err := r.ReadByte()
+		if err == io.EOF {
+			if len(data) == 0 {
+				return nil, io.EOF
+			}
+			return data, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, b)
+		hash = (hash << 1) + gearTable[b]
+		if len(data) >= minSize && (hash&mask) == 0 {
+			return data, nil
+		}
+	}
+	return data, nil
+}
+
+func nextPowerOfTwo(value int64) int64 {
+	if value <= 1 {
+		return 1
+	}
+	value--
+	for shift := 1; shift < 64; shift *= 2 {
+		value |= value >> shift
+	}
+	return value + 1
+}
+
+var gearTable = makeGearTable()
+
+func makeGearTable() [256]uint64 {
+	var table [256]uint64
+	var seed uint64 = 0x9e3779b97f4a7c15
+	for i := range table {
+		seed += 0x9e3779b97f4a7c15
+		z := seed
+		z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+		z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+		table[i] = z ^ (z >> 31)
+	}
+	return table
 }

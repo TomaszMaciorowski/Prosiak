@@ -1,0 +1,22 @@
+{
+  "server": "http://localhost:8080",
+  "chunk_size": 262144,
+  "replication": 3,
+  "retention": 5,
+  "jobs": [
+    {
+      "name": "documents",
+      "paths": [
+        "C:/Users/Tomek/Documents"
+      ],
+      "exclude": [
+        "**/.git/**",
+        "**/node_modules/**",
+        "**/bin/**",
+        "**/obj/**",
+        "**/*.tmp",
+        "**/*.log"
+      ]
+    }
+  ]
+}

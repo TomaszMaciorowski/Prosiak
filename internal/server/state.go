@@ -40,6 +40,12 @@ type PruneTask struct {
 	Locations []protocol.NodeInfo
 }
 
+type OrphanChunkTask struct {
+	Hash string
+	Size int64
+	Node protocol.NodeInfo
+}
+
 func NewState(dbPath string) (*State, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil && filepath.Dir(dbPath) != "." {
 		return nil, err
@@ -694,6 +700,55 @@ LIMIT ?
 			return locations[left].ID < locations[right].ID
 		})
 		tasks[i].Locations = locations
+	}
+	return tasks
+}
+
+func (s *State) OrphanChunkTasks(limit int) []OrphanChunkTask {
+	if limit <= 0 {
+		limit = 100
+	}
+	cutoff := time.Now().UTC().Add(-nodeOfflineAfter).Format(time.RFC3339)
+	rows, err := s.db.Query(`
+SELECT
+	cl.hash,
+	cl.size,
+	n.id,
+	n.address,
+	n.capacity,
+	n.free,
+	n.last_seen,
+	n.status
+FROM chunk_locations cl
+JOIN nodes n ON n.id = cl.node_id
+LEFT JOIN file_chunks fc ON fc.hash = cl.hash
+WHERE fc.hash IS NULL
+  AND n.last_seen >= ?
+ORDER BY cl.hash, n.id
+LIMIT ?
+`, cutoff, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	tasks := make([]OrphanChunkTask, 0)
+	for rows.Next() {
+		var task OrphanChunkTask
+		if err := rows.Scan(
+			&task.Hash,
+			&task.Size,
+			&task.Node.ID,
+			&task.Node.Address,
+			&task.Node.Capacity,
+			&task.Node.Free,
+			&task.Node.LastSeen,
+			&task.Node.Status,
+		); err != nil {
+			continue
+		}
+		task.Node = withDerivedStatus(task.Node)
+		tasks = append(tasks, task)
 	}
 	return tasks
 }
