@@ -58,6 +58,8 @@ Uruchom serwer:
 go run ./cmd/backup-server -config configs\server.json
 ```
 
+Przy starcie program wypisze nazwe i wersje, np. `Prosiak 1.0 backup-server starting`.
+
 Panel web bedzie dostepny tutaj:
 
 ```text
@@ -122,6 +124,8 @@ go run ./cmd/backupctl backup-job -config configs\client.json -job documents
 ```
 
 `backupctl` skanuje katalogi rekurencyjnie, pomija wpisy z `exclude`, pakuje wynik do strumienia `tar` bez kompresji i wysyla go do serwera. Brak kompresji jest celowy: dzieki temu deduplikacja ma wieksza szanse ponownie uzyc chunkow z poprzednich wersji.
+
+Podczas backupu `backupctl` pokazuje postep na stderr. Dla pojedynczego pliku widac bajty i procent, a dla backupu katalogu widac liczbe bajtow wyslanych w strumieniu `.tar`.
 
 ## Lista Backupow
 

@@ -17,9 +17,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"backup/internal/protocol"
 	"backup/internal/tlsconfig"
+	"backup/internal/version"
 )
 
 const defaultChunkSize = 512 * 1024
@@ -46,6 +49,8 @@ type backupJob struct {
 var httpClient = &http.Client{}
 
 func main() {
+	fmt.Fprintf(os.Stderr, "%s backupctl\n", version.FullName())
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -137,7 +142,13 @@ func backup(args []string) error {
 	}
 	defer f.Close()
 
-	manifest, err := uploadToServer(*serverURL, *filePath, f, *backupName, *retention, *chunkSize, *replication)
+	var total int64
+	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() {
+		total = info.Size()
+	}
+	progress, stopProgress := newProgressReader(f, total, "backup progress")
+	manifest, err := uploadToServer(*serverURL, *filePath, progress, *backupName, *retention, *chunkSize, *replication)
+	stopProgress()
 	if err != nil {
 		return err
 	}
@@ -202,7 +213,9 @@ func backupConfiguredJob(args []string) error {
 	}()
 
 	fileName := job.Name + ".tar"
-	manifest, err := uploadToServer(serverURL, fileName, pr, job.Name, job.Retention, job.ChunkSize, job.Replication)
+	progress, stopProgress := newProgressReader(pr, 0, "backup progress")
+	manifest, err := uploadToServer(serverURL, fileName, progress, job.Name, job.Retention, job.ChunkSize, job.Replication)
+	stopProgress()
 	if err != nil {
 		return err
 	}
@@ -354,6 +367,59 @@ func formatBytes(bytes int64) string {
 		return fmt.Sprintf("%.0f %s", value, unit)
 	}
 	return fmt.Sprintf("%.1f %s", value, unit)
+}
+
+type progressReader struct {
+	r     io.Reader
+	total int64
+	read  atomic.Int64
+}
+
+func newProgressReader(r io.Reader, total int64, label string) (io.Reader, func()) {
+	pr := &progressReader{r: r, total: total}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				printProgress(label, pr.read.Load(), total)
+				fmt.Fprintln(os.Stderr)
+				return
+			case <-ticker.C:
+				printProgress(label, pr.read.Load(), total)
+			}
+		}
+	}()
+
+	return pr, func() {
+		close(done)
+		<-finished
+	}
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.read.Add(int64(n))
+	}
+	return n, err
+}
+
+func printProgress(label string, read int64, total int64) {
+	if total > 0 {
+		percent := float64(read) * 100 / float64(total)
+		if percent > 100 {
+			percent = 100
+		}
+		fmt.Fprintf(os.Stderr, "\r%s: %s / %s (%.1f%%)", label, formatBytes(read), formatBytes(total), percent)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r%s: %s sent", label, formatBytes(read))
 }
 
 func uploadToServer(serverURL string, fileName string, r io.Reader, backupName string, retention int, chunkSize int64, replication int) (protocol.FileManifest, error) {

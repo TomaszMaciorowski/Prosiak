@@ -17,6 +17,7 @@ import (
 	"backup/internal/httpjson"
 	"backup/internal/protocol"
 	"backup/internal/tlsconfig"
+	"backup/internal/version"
 )
 
 type nodeConfig struct {
@@ -36,6 +37,8 @@ type nodeConfig struct {
 var serverHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func main() {
+	log.Printf("%s backup-node starting", version.FullName())
+
 	id := flag.String("id", "node-1", "node id")
 	addr := flag.String("addr", ":9001", "node listen address")
 	publicAddr := flag.String("public-addr", "http://localhost:9001", "address other nodes can use")

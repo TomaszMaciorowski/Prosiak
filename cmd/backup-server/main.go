@@ -10,6 +10,7 @@ import (
 
 	"backup/internal/server"
 	"backup/internal/tlsconfig"
+	"backup/internal/version"
 )
 
 type serverConfig struct {
@@ -23,6 +24,8 @@ type serverConfig struct {
 }
 
 func main() {
+	log.Printf("%s backup-server starting", version.FullName())
+
 	addr := flag.String("addr", ":8080", "server listen address")
 	dbPath := flag.String("db", "server-data/backup.db", "sqlite database path")
 	replicationInterval := flag.Duration("replication-interval", 30*time.Second, "replication scheduler interval")
