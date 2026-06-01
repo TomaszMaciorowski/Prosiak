@@ -19,16 +19,19 @@ import (
 	"strings"
 
 	"backup/internal/protocol"
+	"backup/internal/tlsconfig"
 )
 
 const defaultChunkSize = 512 * 1024
 
 type clientConfig struct {
-	Server      string      `json:"server"`
-	ChunkSize   int64       `json:"chunk_size"`
-	Replication int         `json:"replication"`
-	Retention   int         `json:"retention"`
-	Jobs        []backupJob `json:"jobs"`
+	Server             string      `json:"server"`
+	ChunkSize          int64       `json:"chunk_size"`
+	Replication        int         `json:"replication"`
+	Retention          int         `json:"retention"`
+	CACertFile         string      `json:"ca_cert_file"`
+	InsecureSkipVerify bool        `json:"insecure_skip_verify"`
+	Jobs               []backupJob `json:"jobs"`
 }
 
 type backupJob struct {
@@ -39,6 +42,8 @@ type backupJob struct {
 	Replication int      `json:"replication"`
 	Retention   int      `json:"retention"`
 }
+
+var httpClient = &http.Client{}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -75,11 +80,29 @@ func main() {
 
 func usage() {
 	fmt.Println("usage:")
-	fmt.Println("  backupctl backup  -server http://localhost:8080 -file path [-name backup-name] [-retention 5] [-chunk-size 524288] [-replication 3]")
-	fmt.Println("  backupctl backup-job -config configs/client.json [-job documents]")
-	fmt.Println("  backupctl list -server http://localhost:8080")
-	fmt.Println("  backupctl restore -server http://localhost:8080 -id file-id -out path")
-	fmt.Println("  backupctl restore-job -server http://localhost:8080 -id file-id -out directory")
+	fmt.Println("  backupctl backup  -server http://localhost:8080 -file path [-name backup-name] [-retention 5] [-chunk-size 524288] [-replication 3] [-ca-cert-file ca.pem]")
+	fmt.Println("  backupctl backup-job -config configs/client.json [-job documents] [-ca-cert-file ca.pem]")
+	fmt.Println("  backupctl list -server http://localhost:8080 [-ca-cert-file ca.pem]")
+	fmt.Println("  backupctl restore -server http://localhost:8080 -id file-id -out path [-ca-cert-file ca.pem]")
+	fmt.Println("  backupctl restore-job -server http://localhost:8080 -id file-id -out directory [-ca-cert-file ca.pem]")
+}
+
+func addTLSFlags(fs *flag.FlagSet) (*string, *bool) {
+	caCertFile := fs.String("ca-cert-file", "", "CA certificate file trusted when connecting to the server")
+	insecureSkipVerify := fs.Bool("insecure-skip-verify", false, "skip TLS certificate verification when connecting to the server")
+	return caCertFile, insecureSkipVerify
+}
+
+func configureHTTPClient(caCertFile string, insecureSkipVerify bool) error {
+	client, err := tlsconfig.HTTPClient(tlsconfig.ClientConfig{
+		CACertFile:         caCertFile,
+		InsecureSkipVerify: insecureSkipVerify,
+	}, 0)
+	if err != nil {
+		return err
+	}
+	httpClient = client
+	return nil
 }
 
 func backup(args []string) error {
@@ -90,7 +113,11 @@ func backup(args []string) error {
 	retention := fs.Int("retention", 0, "keep last N versions for this backup name, 0 disables retention")
 	chunkSize := fs.Int64("chunk-size", defaultChunkSize, "chunk size in bytes")
 	replication := fs.Int("replication", 3, "copies per chunk")
+	caCertFile, insecureSkipVerify := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
 		return err
 	}
 	if *filePath == "" {
@@ -134,6 +161,7 @@ func backupConfiguredJob(args []string) error {
 	fs := flag.NewFlagSet("backup-job", flag.ExitOnError)
 	configPath := fs.String("config", "configs/client.json", "JSON client config file")
 	jobName := fs.String("job", "", "job name from config")
+	caCertFile, insecureSkipVerify := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -156,6 +184,15 @@ func backupConfiguredJob(args []string) error {
 	serverURL := cfg.Server
 	if serverURL == "" {
 		serverURL = "http://localhost:8080"
+	}
+	if *caCertFile != "" {
+		cfg.CACertFile = *caCertFile
+	}
+	if *insecureSkipVerify {
+		cfg.InsecureSkipVerify = true
+	}
+	if err := configureHTTPClient(cfg.CACertFile, cfg.InsecureSkipVerify); err != nil {
+		return err
 	}
 
 	// Tar leci strumieniem, zeby nie robic lokalnego pliku tymczasowego dla duzych katalogow.
@@ -189,7 +226,11 @@ func restore(args []string) error {
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
 	fileID := fs.String("id", "", "file id")
 	outPath := fs.String("out", "", "restore output path")
+	caCertFile, insecureSkipVerify := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
 		return err
 	}
 	if *fileID == "" || *outPath == "" {
@@ -202,7 +243,7 @@ func restore(args []string) error {
 	}
 	defer out.Close()
 
-	resp, err := http.Get(*serverURL + "/files/" + *fileID + "/download")
+	resp, err := httpClient.Get(*serverURL + "/files/" + *fileID + "/download")
 	if err != nil {
 		return err
 	}
@@ -222,11 +263,15 @@ func restore(args []string) error {
 func listBackups(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
+	caCertFile, insecureSkipVerify := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
+		return err
+	}
 
-	resp, err := http.Get(*serverURL + "/files")
+	resp, err := httpClient.Get(*serverURL + "/files")
 	if err != nil {
 		return err
 	}
@@ -264,14 +309,18 @@ func restoreConfiguredJob(args []string) error {
 	serverURL := fs.String("server", "http://localhost:8080", "central server url")
 	fileID := fs.String("id", "", "file id")
 	outPath := fs.String("out", "", "restore output directory")
+	caCertFile, insecureSkipVerify := addTLSFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := configureHTTPClient(*caCertFile, *insecureSkipVerify); err != nil {
 		return err
 	}
 	if *fileID == "" || *outPath == "" {
 		return errors.New("-id and -out are required")
 	}
 
-	resp, err := http.Get(*serverURL + "/files/" + *fileID + "/download")
+	resp, err := httpClient.Get(*serverURL + "/files/" + *fileID + "/download")
 	if err != nil {
 		return err
 	}
@@ -347,7 +396,7 @@ func uploadToServer(serverURL string, fileName string, r io.Reader, backupName s
 		return protocol.FileManifest{}, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return protocol.FileManifest{}, err
 	}

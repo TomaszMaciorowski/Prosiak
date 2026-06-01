@@ -21,6 +21,12 @@ var nodeHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 const defaultChunkSize = 512 * 1024
 
+func SetNodeHTTPClient(client *http.Client) {
+	if client != nil {
+		nodeHTTPClient = client
+	}
+}
+
 type Handler struct {
 	state *State
 }

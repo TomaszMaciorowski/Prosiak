@@ -16,17 +16,24 @@ import (
 	"backup/internal/chunkstore"
 	"backup/internal/httpjson"
 	"backup/internal/protocol"
+	"backup/internal/tlsconfig"
 )
 
 type nodeConfig struct {
-	ID          string `json:"id"`
-	Addr        string `json:"addr"`
-	PublicAddr  string `json:"public_addr"`
-	Server      string `json:"server"`
-	Storage     string `json:"storage"`
-	Capacity    string `json:"capacity"`
-	WipeStorage bool   `json:"wipe_storage"`
+	ID                 string `json:"id"`
+	Addr               string `json:"addr"`
+	PublicAddr         string `json:"public_addr"`
+	Server             string `json:"server"`
+	Storage            string `json:"storage"`
+	Capacity           string `json:"capacity"`
+	WipeStorage        bool   `json:"wipe_storage"`
+	CertFile           string `json:"cert_file"`
+	KeyFile            string `json:"key_file"`
+	CACertFile         string `json:"ca_cert_file"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 }
+
+var serverHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func main() {
 	id := flag.String("id", "node-1", "node id")
@@ -36,6 +43,10 @@ func main() {
 	storage := flag.String("storage", "storage-node-1", "chunk storage directory")
 	capacityText := flag.String("capacity", "10GB", "storage capacity reserved for backup, e.g. 10GB, 500MB, 1TB")
 	wipeStorage := flag.Bool("wipe-storage", false, "clear storage directory and exit")
+	certFile := flag.String("cert-file", "", "TLS certificate file for HTTPS")
+	keyFile := flag.String("key-file", "", "TLS private key file for HTTPS")
+	caCertFile := flag.String("ca-cert-file", "", "CA certificate file trusted when connecting to the server")
+	insecureSkipVerify := flag.Bool("insecure-skip-verify", false, "skip TLS certificate verification when connecting to the server")
 	configPath := flag.String("config", "", "optional JSON config file")
 	flag.Parse()
 
@@ -66,7 +77,28 @@ func main() {
 		if cfg.WipeStorage && !overrides["wipe-storage"] {
 			*wipeStorage = cfg.WipeStorage
 		}
+		if cfg.CertFile != "" && !overrides["cert-file"] {
+			*certFile = cfg.CertFile
+		}
+		if cfg.KeyFile != "" && !overrides["key-file"] {
+			*keyFile = cfg.KeyFile
+		}
+		if cfg.CACertFile != "" && !overrides["ca-cert-file"] {
+			*caCertFile = cfg.CACertFile
+		}
+		if cfg.InsecureSkipVerify && !overrides["insecure-skip-verify"] {
+			*insecureSkipVerify = cfg.InsecureSkipVerify
+		}
 	}
+
+	client, err := tlsconfig.HTTPClient(tlsconfig.ClientConfig{
+		CACertFile:         *caCertFile,
+		InsecureSkipVerify: *insecureSkipVerify,
+	}, 10*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
+	serverHTTPClient = client
 
 	capacity, err := parseCapacity(*capacityText)
 	if err != nil {
@@ -102,7 +134,10 @@ func main() {
 	mux.HandleFunc("DELETE /storage", clearStorage(store))
 
 	log.Printf("backup node %s listening on %s, storage=%s, capacity=%d", *id, *addr, *storage, capacity)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	if err := tlsconfig.ListenAndServe(*addr, mux, tlsconfig.ServerConfig{
+		CertFile: *certFile,
+		KeyFile:  *keyFile,
+	}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -157,7 +192,7 @@ func register(serverURL string, req protocol.NodeRegisterRequest) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(serverURL+"/nodes/register", "application/json", bytes.NewReader(body))
+	resp, err := serverHTTPClient.Post(serverURL+"/nodes/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

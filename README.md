@@ -262,6 +262,149 @@ configs/home.local.json
 
 Takie pliki sa ignorowane przez Git.
 
+## Linux
+
+Prosiak moze dzialac pod Linuxem. Projekt jest napisany w Go i uzywa przenosnych mechanizmow: HTTP, plikow/katalogow oraz SQLite przez `modernc.org/sqlite`.
+
+Build natywnie na Linuxie:
+
+```bash
+go build -o backup-server ./cmd/backup-server
+go build -o backup-node ./cmd/backup-node
+go build -o backupctl ./cmd/backupctl
+```
+
+Uruchomienie:
+
+```bash
+./backup-server -config configs/server.json
+./backup-node -config configs/node.json
+./backupctl list -server http://localhost:8080
+```
+
+W configach zmien sciezki Windowsowe typu `C:/path/to/documents` na linuxowe, np.:
+
+```json
+"paths": [
+  "/home/user/documents"
+]
+```
+
+Jesli budujesz binarki linuxowe z Windowsa:
+
+```powershell
+$env:GOOS="linux"
+$env:GOARCH="amd64"
+$env:CGO_ENABLED="0"
+go build -o backup-server-linux-amd64 ./cmd/backup-server
+go build -o backup-node-linux-amd64 ./cmd/backup-node
+go build -o backupctl-linux-amd64 ./cmd/backupctl
+```
+
+Na maszynach produkcyjnych pamietaj o otwarciu portow miedzy serwerem i node'ami oraz o ustawieniu `public_addr` na adres widoczny z serwera.
+
+## HTTPS / TLS
+
+Domyslnie Prosiak nadal startuje po zwyklym HTTP, zeby lokalny quick start dzialal bez certyfikatow. Szyfrowanie polaczen wlaczasz przez podanie certyfikatu i klucza dla procesu, ktory nasluchuje:
+
+```json
+{
+  "addr": ":8443",
+  "cert_file": "certs/server.crt",
+  "key_file": "certs/server.key",
+  "ca_cert_file": "certs/ca.crt"
+}
+```
+
+Dla node'a ustaw jednoczesnie HTTPS w adresie publicznym i adresie serwera:
+
+```json
+{
+  "addr": ":9443",
+  "public_addr": "https://localhost:9443",
+  "server": "https://localhost:8443",
+  "cert_file": "certs/node.crt",
+  "key_file": "certs/node.key",
+  "ca_cert_file": "certs/ca.crt"
+}
+```
+
+`ca_cert_file` mowi klientowi HTTP, jaki CA ma zaufac. Uzywaja go:
+
+- `backupctl`, gdy laczy sie z serwerem,
+- node, gdy rejestruje sie w serwerze,
+- serwer, gdy zapisuje, odczytuje i usuwa chunki na node'ach.
+
+Do lokalnych testow z self-signed certem mozesz uzyc `-insecure-skip-verify` albo `"insecure_skip_verify": true`, ale nie traktuj tego jako bezpiecznego ustawienia produkcyjnego.
+
+### Generowanie Certyfikatow Do Testow
+
+Najwygodniej zrobic lokalne CA i podpisac nim certyfikat serwera oraz node'a. W PowerShellu, z katalogu projektu:
+
+```powershell
+mkdir certs
+```
+
+Lokalne CA:
+
+```powershell
+openssl req -x509 -newkey rsa:4096 -nodes `
+  -keyout certs\ca.key `
+  -out certs\ca.crt `
+  -days 3650 `
+  -subj "/CN=Prosiak Local CA"
+```
+
+Certyfikat serwera dla `localhost`:
+
+```powershell
+openssl req -newkey rsa:2048 -nodes `
+  -keyout certs\server.key `
+  -out certs\server.csr `
+  -subj "/CN=localhost"
+```
+
+Utworz plik `certs\localhost.ext`:
+
+```text
+subjectAltName=DNS:localhost,IP:127.0.0.1
+```
+
+i podpisz certyfikat tak:
+
+```powershell
+openssl x509 -req `
+  -in certs\server.csr `
+  -CA certs\ca.crt `
+  -CAkey certs\ca.key `
+  -CAcreateserial `
+  -out certs\server.crt `
+  -days 825 `
+  -sha256 `
+  -extfile certs\localhost.ext
+```
+
+Certyfikat node'a lokalnego:
+
+```powershell
+openssl req -newkey rsa:2048 -nodes `
+  -keyout certs\node.key `
+  -out certs\node.csr `
+  -subj "/CN=localhost"
+
+openssl x509 -req `
+  -in certs\node.csr `
+  -CA certs\ca.crt `
+  -CAkey certs\ca.key `
+  -CAcreateserial `
+  -out certs\node.crt `
+  -days 825 `
+  -sha256 `
+  -extfile certs\localhost.ext
+```
+
+Po tym ustaw `ca_cert_file` na `certs/ca.crt`, a `cert_file` i `key_file` odpowiednio na certyfikat danego procesu.
+
 ## Panel Web
 
 Panel web pozwala:
@@ -327,11 +470,13 @@ storage-node-2/
 storage-node-3/
 ```
 
-Na ten moment chunki nie sa szyfrowane. To znaczy, ze osoba z dostepem do dysku node'a moze odczytac fragmenty danych. Nie wystawiaj tego systemu bezposrednio do internetu i traktuj go jako prototyp/MVP.
+Polaczenia moga byc szyfrowane przez HTTPS/TLS po ustawieniu `cert_file`, `key_file` i zaufanego `ca_cert_file`.
+
+Na ten moment chunki na dysku node'a nie sa szyfrowane. To znaczy, ze osoba z dostepem do dysku node'a moze odczytac fragmenty danych. Nie wystawiaj tego systemu bezposrednio do internetu i traktuj go jako prototyp/MVP.
 
 ## Ograniczenia
 
-- brak szyfrowania chunkow,
+- brak szyfrowania chunkow na dysku,
 - brak autoryzacji,
 - brak pelnego trybu HA dla metadanych serwera,
 - SQLite `backup.db` jest pojedynczym punktem metadanych,
