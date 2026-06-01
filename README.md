@@ -335,9 +335,34 @@ Panel web przy pierwszym zadaniu zapyta o token i zapamieta go w `sessionStorage
 
 Token to wspolny sekret calego klastra - nie rozdziela rol miedzy serwer, node i klienta. Jego zadaniem jest odciecie nieuprawnionego dostepu do API (odczyt/kasowanie backupow, czyszczenie storage node'a) oraz zablokowanie rejestracji obcych node'ow, co domyka tez wektor SSRF.
 
+## Szyfrowanie Chunkow (At-Rest)
+
+Kazdy node moze szyfrowac chunki na dysku przez AES-256-GCM. Szyfrowanie jest przezroczyste: serwer dalej widzi i adresuje chunki po hashu jawnej tresci, wiec deduplikacja i weryfikacja integralnosci dzialaja jak wczesniej. Node tylko szyfruje bajty tuz przed zapisem i odszyfrowuje przy odczycie.
+
+Klucz to 32 bajty zakodowane w base64. Wygeneruj go np. tak:
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Ustaw go dla node'a przez `-storage-key`, pole `storage_key` w configu albo zmienna `BACKUP_STORAGE_KEY`:
+
+```powershell
+$env:BACKUP_STORAGE_KEY = "<base64-32-bajty>"
+go run ./cmd/backup-node -config configs\node.json
+```
+
+Przy starcie node wypisze `chunk storage encryption: enabled (AES-256-GCM)` albo ostrzezenie, jesli klucza nie ma.
+
+Uwagi:
+
+- klucz jest lokalny dla node'a - rozne node'y moga miec rozne klucze,
+- zmiana klucza sprawia, ze starych chunkow nie da sie odczytac (brak rotacji),
+- GCM dodatkowo wykrywa manipulacje przy chunku na dysku.
+
 ## HTTPS / TLS
 
-Domyslnie Prosiak nadal startuje po zwyklym HTTP, zeby lokalny quick start dzialal bez certyfikatow. Szyfrowanie polaczen wlaczasz przez podanie certyfikatu i klucza dla procesu, ktory nasluchuje:
+Domyslnie Prosiak nadal startuje po zwyklym HTTP, zeby lokalny quick start dzialal bez certyfikatow. W takim trybie serwer i node wypisuja przy starcie ostrzezenie `WARNING: serving plaintext HTTP`. Gdy podasz certyfikat, polaczenie wymusza minimum TLS 1.2. Szyfrowanie polaczen wlaczasz przez podanie certyfikatu i klucza dla procesu, ktory nasluchuje:
 
 ```json
 {
@@ -506,11 +531,13 @@ Polaczenia moga byc szyfrowane przez HTTPS/TLS po ustawieniu `cert_file`, `key_f
 
 Dostep do API serwera i node'ow chroni wspolny token (bearer) - patrz sekcja "Token Dostepu". Adres rejestrowanego node'a jest walidowany i sprowadzany do czystego `scheme://host`, co razem z tokenem domyka wektor SSRF.
 
-Na ten moment chunki na dysku node'a nie sa szyfrowane. To znaczy, ze osoba z dostepem do dysku node'a moze odczytac fragmenty danych. Nie wystawiaj tego systemu bezposrednio do internetu i traktuj go jako prototyp/MVP.
+Chunki na dysku node'a mozesz zaszyfrowac at-rest - patrz sekcja "Szyfrowanie Chunkow". Bez ustawionego klucza chunki sa zapisywane jawnie i osoba z dostepem do dysku node'a moze odczytac fragmenty danych. Nie wystawiaj tego systemu bezposrednio do internetu i traktuj go jako prototyp/MVP.
+
+Upload backupu ma dwa bezpieczniki przed DoS: `chunk_size` jest ograniczony z gory (max 64 MiB), a opcjonalny `max_upload_bytes` w configu serwera odrzuca zbyt duze pojedyncze wysylki. Sam strumien jest chunkowany w locie, wiec serwer nie buforuje calego pliku ani w pamieci, ani w plikach tymczasowych.
 
 ## Ograniczenia
 
-- brak szyfrowania chunkow na dysku,
+- szyfrowanie chunkow at-rest jest opcjonalne i wymaga recznego ustawienia klucza, bez rotacji,
 - uwierzytelnianie opiera sie na jednym wspolnym tokenie, bez podzialu na role,
 - brak pelnego trybu HA dla metadanych serwera,
 - SQLite `backup.db` jest pojedynczym punktem metadanych,

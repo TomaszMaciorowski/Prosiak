@@ -26,7 +26,12 @@ func ListenAndServe(addr string, handler http.Handler, cfg ServerConfig) error {
 	if cfg.CertFile == "" || cfg.KeyFile == "" {
 		return fmt.Errorf("both cert_file and key_file are required for HTTPS")
 	}
-	return http.ListenAndServeTLS(addr, cfg.CertFile, cfg.KeyFile, handler)
+	server := &http.Server{
+		Addr:      addr,
+		Handler:   handler,
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	return server.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile)
 }
 
 func HTTPClient(cfg ClientConfig, timeout time.Duration) (*http.Client, error) {

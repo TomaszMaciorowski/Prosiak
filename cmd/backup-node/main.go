@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,11 +31,14 @@ type nodeConfig struct {
 	Capacity           string `json:"capacity"`
 	WipeStorage        bool   `json:"wipe_storage"`
 	AuthToken          string `json:"auth_token"`
+	StorageKey         string `json:"storage_key"`
 	CertFile           string `json:"cert_file"`
 	KeyFile            string `json:"key_file"`
 	CACertFile         string `json:"ca_cert_file"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 }
+
+const storageKeyEnv = "BACKUP_STORAGE_KEY"
 
 var serverHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
@@ -49,6 +53,7 @@ func main() {
 	capacityText := flag.String("capacity", "10GB", "storage capacity reserved for backup, e.g. 10GB, 500MB, 1TB")
 	wipeStorage := flag.Bool("wipe-storage", false, "clear storage directory and exit")
 	authToken := flag.String("auth-token", "", "shared bearer token required to talk to the server and to this node (or set "+auth.EnvVar+")")
+	storageKey := flag.String("storage-key", "", "base64-encoded 32-byte key to encrypt chunks at rest (or set "+storageKeyEnv+")")
 	certFile := flag.String("cert-file", "", "TLS certificate file for HTTPS")
 	keyFile := flag.String("key-file", "", "TLS private key file for HTTPS")
 	caCertFile := flag.String("ca-cert-file", "", "CA certificate file trusted when connecting to the server")
@@ -86,6 +91,9 @@ func main() {
 		if cfg.AuthToken != "" && !overrides["auth-token"] {
 			*authToken = cfg.AuthToken
 		}
+		if cfg.StorageKey != "" && !overrides["storage-key"] {
+			*storageKey = cfg.StorageKey
+		}
 		if cfg.CertFile != "" && !overrides["cert-file"] {
 			*certFile = cfg.CertFile
 		}
@@ -113,9 +121,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	store, err := chunkstore.New(*storage)
+	storageKeyBytes, err := parseStorageKey(*storageKey)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	store, err := chunkstore.New(*storage, storageKeyBytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if store.Encrypted() {
+		log.Printf("chunk storage encryption: enabled (AES-256-GCM)")
+	} else {
+		log.Printf("WARNING: chunks stored unencrypted at rest; set storage_key (32-byte base64) or %s to enable encryption", storageKeyEnv)
 	}
 	if *wipeStorage {
 		files, bytes, err := store.Clear()
@@ -151,6 +169,9 @@ func main() {
 		return r.Method == http.MethodGet && r.URL.Path == "/health"
 	}, mux)
 
+	if *certFile == "" {
+		log.Printf("WARNING: serving plaintext HTTP on %s; set cert_file/key_file to enable TLS", *addr)
+	}
 	log.Printf("backup node %s listening on %s, storage=%s, capacity=%d", *id, *addr, *storage, capacity)
 	if err := tlsconfig.ListenAndServe(*addr, handler, tlsconfig.ServerConfig{
 		CertFile: *certFile,
@@ -158,6 +179,27 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// parseStorageKey resolves the at-rest encryption key from the flag/config value
+// or the BACKUP_STORAGE_KEY env var. An empty value disables encryption; a
+// non-empty value must be a base64-encoded 32-byte key.
+func parseStorageKey(text string) ([]byte, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = strings.TrimSpace(os.Getenv(storageKeyEnv))
+	}
+	if text == "" {
+		return nil, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(text)
+	if err != nil {
+		return nil, fmt.Errorf("invalid storage key (expected base64): %v", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("storage key must decode to 32 bytes, got %d", len(key))
+	}
+	return key, nil
 }
 
 func readNodeConfig(path string) (nodeConfig, error) {

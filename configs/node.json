@@ -6,6 +6,7 @@
   "storage": "storage-node-1",
   "capacity": "10GB",
   "auth_token": "",
+  "storage_key": "",
   "cert_file": "",
   "key_file": "",
   "ca_cert_file": "",

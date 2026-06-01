@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,12 @@ var nodeHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 const defaultChunkSize = 512 * 1024
 
+// maxChunkSize caps the client-supplied target chunk size. The chunker buffers
+// up to a few multiples of this value in memory, so without a ceiling a request
+// like ?chunk_size=9999999999 would try to allocate gigabytes and crash the
+// server. 64 MiB matches the largest value documented in the README.
+const maxChunkSize = 64 * 1024 * 1024
+
 func SetNodeHTTPClient(client *http.Client) {
 	if client != nil {
 		nodeHTTPClient = client
@@ -31,12 +38,13 @@ func SetNodeHTTPClient(client *http.Client) {
 }
 
 type Handler struct {
-	state *State
-	token string
+	state          *State
+	token          string
+	maxUploadBytes int64
 }
 
-func NewHandler(state *State, token string) *Handler {
-	return &Handler{state: state, token: token}
+func NewHandler(state *State, token string, maxUploadBytes int64) *Handler {
+	return &Handler{state: state, token: token, maxUploadBytes: maxUploadBytes}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -268,21 +276,34 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusBadRequest, "chunk_size must be positive")
 		return
 	}
+	if chunkSize > maxChunkSize {
+		httpjson.Error(w, http.StatusBadRequest, fmt.Sprintf("chunk_size must not exceed %d bytes", maxChunkSize))
+		return
+	}
 	if retention < 0 {
 		httpjson.Error(w, http.StatusBadRequest, "retention must be zero or positive")
 		return
 	}
 
-	file, header, err := r.FormFile("file")
+	// Optional hard ceiling on the whole upload so a single request cannot fill
+	// the box. 0 means unlimited.
+	if h.maxUploadBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadBytes)
+	}
+
+	// Stream the multipart body instead of buffering it: r.FormFile would spill
+	// large uploads to temp files on disk, but we only ever need one chunk in
+	// memory at a time.
+	file, filename, err := openUploadPart(r)
 	if err != nil {
-		httpjson.Error(w, http.StatusBadRequest, "multipart field file is required")
+		httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	defer file.Close()
 	if backupName == "" {
-		backupName = header.Filename
+		backupName = filename
 	}
-	log.Printf("backup upload file=%s backup_name=%s chunk_size=%d replication=%d retention=%d", header.Filename, backupName, chunkSize, replication, retention)
+	log.Printf("backup upload file=%s backup_name=%s chunk_size=%d replication=%d retention=%d", filename, backupName, chunkSize, replication, retention)
 
 	// Granice chunkow wynikaja z tresci, wiec mala wstawka w archiwum nie przesuwa calej reszty backupu.
 	reader := bufio.NewReader(file)
@@ -343,7 +364,7 @@ func (h *Handler) backupFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	manifest := h.state.CreateFile(protocol.CreateFileRequest{
-		Name:             header.Filename,
+		Name:             filename,
 		BackupName:       backupName,
 		Retention:        retention,
 		Size:             totalSize,
@@ -430,6 +451,28 @@ func fileIDs(files []protocol.FileManifest) []string {
 		ids = append(ids, file.ID)
 	}
 	return ids
+}
+
+// openUploadPart streams the multipart body and returns the "file" part without
+// buffering the whole upload to memory or disk. The caller must Close the part.
+func openUploadPart(r *http.Request) (*multipart.Part, string, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, "", fmt.Errorf("multipart body is required")
+	}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			return nil, "", fmt.Errorf("multipart field file is required")
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if part.FormName() == "file" {
+			return part, part.FileName(), nil
+		}
+		_ = part.Close()
+	}
 }
 
 // normalizeNodeAddress validates a node-supplied address and reduces it to a

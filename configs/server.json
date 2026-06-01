@@ -3,6 +3,7 @@
   "db": "server-data/backup.db",
   "replication_interval": "30s",
   "auth_token": "",
+  "max_upload_bytes": 0,
   "cert_file": "",
   "key_file": "",
   "ca_cert_file": "",

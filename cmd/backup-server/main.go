@@ -19,6 +19,7 @@ type serverConfig struct {
 	DB                  string `json:"db"`
 	ReplicationInterval string `json:"replication_interval"`
 	AuthToken           string `json:"auth_token"`
+	MaxUploadBytes      int64  `json:"max_upload_bytes"`
 	CertFile            string `json:"cert_file"`
 	KeyFile             string `json:"key_file"`
 	CACertFile          string `json:"ca_cert_file"`
@@ -32,6 +33,7 @@ func main() {
 	dbPath := flag.String("db", "server-data/backup.db", "sqlite database path")
 	replicationInterval := flag.Duration("replication-interval", 30*time.Second, "replication scheduler interval")
 	authToken := flag.String("auth-token", "", "shared bearer token required on every API request (or set "+auth.EnvVar+")")
+	maxUploadBytes := flag.Int64("max-upload-bytes", 0, "reject backup uploads larger than this many bytes (0 = unlimited)")
 	certFile := flag.String("cert-file", "", "TLS certificate file for HTTPS")
 	keyFile := flag.String("key-file", "", "TLS private key file for HTTPS")
 	caCertFile := flag.String("ca-cert-file", "", "CA certificate file trusted when connecting to nodes")
@@ -60,6 +62,9 @@ func main() {
 		}
 		if cfg.AuthToken != "" && !overrides["auth-token"] {
 			*authToken = cfg.AuthToken
+		}
+		if cfg.MaxUploadBytes != 0 && !overrides["max-upload-bytes"] {
+			*maxUploadBytes = cfg.MaxUploadBytes
 		}
 		if cfg.CertFile != "" && !overrides["cert-file"] {
 			*certFile = cfg.CertFile
@@ -97,8 +102,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server.StartReplicationScheduler(ctx, state, *replicationInterval)
-	handler := server.NewHandler(state, token)
+	handler := server.NewHandler(state, token, *maxUploadBytes)
 
+	if *certFile == "" {
+		log.Printf("WARNING: serving plaintext HTTP on %s; set cert_file/key_file to enable TLS", *addr)
+	}
 	log.Printf("backup server listening on %s, db=%s", *addr, *dbPath)
 	if err := tlsconfig.ListenAndServe(*addr, handler.Routes(), tlsconfig.ServerConfig{
 		CertFile: *certFile,

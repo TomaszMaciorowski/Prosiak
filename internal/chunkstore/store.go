@@ -1,6 +1,10 @@
 package chunkstore
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,13 +20,37 @@ var ErrHashMismatch = errors.New("chunk hash mismatch")
 
 type Store struct {
 	root string
+	aead cipher.AEAD // optional at-rest encryption; nil means chunks are stored as plaintext
 }
 
-func New(root string) (*Store, error) {
+// New opens a chunk store rooted at root. If key is non-empty it must be 32
+// bytes (AES-256) and every chunk is encrypted with AES-256-GCM before it
+// touches the disk, so a stolen storage directory leaks no backup data.
+func New(root string, key []byte) (*Store, error) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, err
 	}
-	return &Store{root: root}, nil
+	store := &Store{root: root}
+	if len(key) > 0 {
+		if len(key) != 32 {
+			return nil, fmt.Errorf("storage key must be 32 bytes, got %d", len(key))
+		}
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, err
+		}
+		store.aead = gcm
+	}
+	return store, nil
+}
+
+// Encrypted reports whether chunks are stored encrypted at rest.
+func (s *Store) Encrypted() bool {
+	return s.aead != nil
 }
 
 func (s *Store) Path(hash string) (string, error) {
@@ -46,6 +74,15 @@ func (s *Store) Has(hash string) bool {
 }
 
 func (s *Store) Put(hash string, r io.Reader) (int64, error) {
+	if s.aead != nil {
+		return s.putEncrypted(hash, r)
+	}
+	return s.putPlain(hash, r)
+}
+
+// putPlain streams the chunk straight to disk, hashing on the way through so it
+// never has to hold the whole chunk in memory.
+func (s *Store) putPlain(hash string, r io.Reader) (int64, error) {
 	path, err := s.Path(hash)
 	if err != nil {
 		return 0, err
@@ -85,12 +122,71 @@ func (s *Store) Put(hash string, r io.Reader) (int64, error) {
 	return n, nil
 }
 
-func (s *Store) Open(hash string) (*os.File, error) {
+// putEncrypted buffers the chunk (chunks are size-bounded), verifies the hash of
+// the plaintext, then writes nonce||ciphertext sealed with AES-256-GCM.
+func (s *Store) putEncrypted(hash string, r io.Reader) (int64, error) {
+	path, err := s.Path(hash)
+	if err != nil {
+		return 0, err
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return int64(len(data)), err
+	}
+	n := int64(len(data))
+
+	got := HashBytes(data)
+	if got != hash {
+		return n, fmt.Errorf("%w: expected %s got %s", ErrHashMismatch, hash, got)
+	}
+
+	nonce := make([]byte, s.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return n, err
+	}
+	sealed := s.aead.Seal(nonce, nonce, data, nil)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return n, err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, sealed, 0644); err != nil {
+		return n, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return n, err
+	}
+	return n, nil
+}
+
+func (s *Store) Open(hash string) (io.ReadCloser, error) {
 	path, err := s.Path(hash)
 	if err != nil {
 		return nil, err
 	}
-	return os.Open(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if s.aead == nil {
+		return f, nil
+	}
+
+	defer f.Close()
+	sealed, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	nonceSize := s.aead.NonceSize()
+	if len(sealed) < nonceSize {
+		return nil, fmt.Errorf("chunk %s is too short to be encrypted", hash)
+	}
+	plain, err := s.aead.Open(nil, sealed[:nonceSize], sealed[nonceSize:], nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt chunk %s: %w", hash, err)
+	}
+	return io.NopCloser(bytes.NewReader(plain)), nil
 }
 
 func (s *Store) Delete(hash string) error {
